@@ -10,7 +10,7 @@ async function ensureIndexes() {
     await db.collection("products").createIndex({ inStock: 1 });
 
     // subcategorysettings: compound index للـ home-settings query
-    await db.collection("subcategorysettings").createIndex({ category: 1, subCategory: 1 }, { unique: true, sparse: true });
+    await db.collection("subcategorysettings").createIndex({ category: 1, subCategory: 1 }, { unique: true });
     await db.collection("subcategorysettings").createIndex({ order: 1 });
 
     // categorybanners: index على category للـ bulk query

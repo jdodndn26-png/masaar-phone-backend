@@ -31,6 +31,13 @@ async function revalidateHomeSettings() {
   } catch { /* non-blocking */ }
 }
 
+async function revalidateBanners() {
+  try {
+    const url = `${process.env.FRONTEND_URL}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=banners`;
+    await fetch(url, { method: "POST" });
+  } catch { /* non-blocking */ }
+}
+
 async function revalidateCategoryBanners() {
   try {
     const url = `${process.env.FRONTEND_URL}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=category-banners`;
@@ -323,15 +330,24 @@ router.delete("/company/image/:field", authMiddleware, async (req, res) => {
 // GET /api/admin/company
 router.get("/company", async (req, res) => {
   try {
-    let company = await Company.findOne();
-    if (!company) company = await Company.create({});
-    if (company.footerItems.length === 0) {
+    let company = await Company.findOne().lean();
+    if (!company) {
+      company = (await Company.create({})).toObject();
+    }
+    if (!company.footerItems || company.footerItems.length === 0) {
+      await Company.updateOne(
+        { _id: company._id },
+        { $set: { footerItems: [
+          { image: "", linkType: "link", link: "", file: "" },
+          { image: "", linkType: "link", link: "", file: "" },
+          { image: "", linkType: "link", link: "", file: "" },
+        ] } }
+      );
       company.footerItems = [
         { image: "", linkType: "link", link: "", file: "" },
         { image: "", linkType: "link", link: "", file: "" },
         { image: "", linkType: "link", link: "", file: "" },
       ];
-      await company.save();
     }
     res.json(company);
   } catch {
@@ -393,6 +409,7 @@ router.post("/banners/upload/:index", authMiddleware, uploadBanner.single("image
     const url = result.secure_url;
     doc.banners.set(index, { url, active: doc.banners[index].active });
     await doc.save();
+    await revalidateBanners();
     res.json({ url });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -409,6 +426,7 @@ router.patch("/banners/toggle/:index", authMiddleware, async (req, res) => {
     const newActive = !doc.banners[index].active;
     doc.banners.set(index, { url: doc.banners[index].url, active: newActive });
     await doc.save();
+    await revalidateBanners();
     res.json({ active: newActive });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -440,6 +458,7 @@ router.delete("/banners/:index/image", authMiddleware, async (req, res) => {
     await deleteFromCloudinary(old);
     doc.banners.set(index, { url: "", active: doc.banners[index].active });
     await doc.save();
+    await revalidateBanners();
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -457,6 +476,7 @@ router.delete("/banners/:index", authMiddleware, async (req, res) => {
     await deleteFromCloudinary(old);
     doc.banners.splice(index, 1);
     await doc.save();
+    await revalidateBanners();
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -726,7 +746,10 @@ router.get("/sub-categories/public", async (req, res) => {
 // GET /api/admin/sub-categories/home-settings (public)
 router.get("/sub-categories/home-settings", async (req, res) => {
   try {
-    const settings = await SubCategorySettings.find({ category: { $ne: "__config__" } }).sort({ order: 1 });
+    const settings = await SubCategorySettings.find(
+      { category: { $ne: "__config__" } },
+      "category subCategory showInHome order image"
+    ).sort({ order: 1 }).lean();
     res.json(settings);
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -847,7 +870,10 @@ router.put("/orders/:id/status", authMiddleware, async (req, res) => {
 // GET /api/admin/reviews (public - approved only)
 router.get("/reviews", async (req, res) => {
   try {
-    const reviews = await Review.find({ approved: true }).sort({ createdAt: -1 });
+    const reviews = await Review.find(
+      { approved: true },
+      "name comment rating gender createdAt"
+    ).sort({ createdAt: -1 }).lean();
     res.json(reviews);
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });

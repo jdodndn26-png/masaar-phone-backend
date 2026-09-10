@@ -45,6 +45,10 @@ const productSchema = new mongoose.Schema(
         storageOptions: [
           {
             storage: String,
+            ram: String,
+            gpu: String,
+            chip: String,
+            size: String,
             originalPrice: Number,
             salePrice: Number,
           },
@@ -89,10 +93,10 @@ const productSchema = new mongoose.Schema(
       policy: String,
     },
     taxIncluded: { type: Boolean, default: true },
-    category: { type: String },
-    subCategory: { type: String },
-    brand: { type: String },
-    inStock: { type: Boolean, default: true },
+    category: { type: String, index: true },
+    subCategory: { type: String, index: true },
+    brand: { type: String, index: true },
+    inStock: { type: Boolean, default: true, index: true },
   },
   {
     timestamps: true,
@@ -100,6 +104,9 @@ const productSchema = new mongoose.Schema(
     toObject: { virtuals: true },
   }
 );
+
+productSchema.index({ category: 1, inStock: 1 });
+productSchema.index({ brand: 1, inStock: 1 });
 
 productSchema.virtual("discountPercent").get(function () {
   if (this.salePrice != null && this.salePrice !== this.originalPrice) {
@@ -111,5 +118,11 @@ productSchema.virtual("discountPercent").get(function () {
 productSchema.virtual("price").get(function () {
   return this.salePrice || this.originalPrice;
 });
+
+// Indexes for common query patterns
+productSchema.index({ category: 1 });
+productSchema.index({ brand: 1 });
+productSchema.index({ inStock: 1 });
+productSchema.index({ category: 1, brand: 1 });
 
 module.exports = mongoose.model("Product", productSchema);

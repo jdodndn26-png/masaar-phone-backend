@@ -4,10 +4,14 @@ const router = express.Router();
 const Checkout = require("../models/Checkout");
 const OrderRateLimit = require("../models/OrderRateLimit");
 const { orderRateLimitMiddleware, getRateLimitStatus, resolveClientId } = require("../middleware/orderRateLimit");
+const { isBlacklisted } = require("../utils/tokenBlacklist");
 
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const token = req.cookies?.admin_token;
   if (!token) return res.status(401).json({ error: "غير مصرح" });
+  if (await isBlacklisted(token)) {
+    return res.status(401).json({ error: "الجلسة ملغاة - يرجى تسجيل الدخول مرة أخرى" });
+  }
   try {
     req.admin = jwt.verify(token, process.env.JWT_SECRET);
     next();

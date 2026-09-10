@@ -9,5 +9,7 @@ const subCategorySettingsSchema = new mongoose.Schema({
 });
 
 subCategorySettingsSchema.index({ category: 1, subCategory: 1 }, { unique: true });
+// Support home-settings query: filter by category + sort by order
+subCategorySettingsSchema.index({ showInHome: 1, order: 1 });
 
 module.exports = mongoose.model("SubCategorySettings", subCategorySettingsSchema);

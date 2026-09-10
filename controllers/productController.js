@@ -43,23 +43,43 @@ function pickAllowed(body) {
   }, {});
 }
 
-// Fields needed for homepage/listing — excludes heavy fields (description, sections, specGroups, specs)
-// Note: discountPercent and price are virtuals, they are included automatically via toJSON
+// Fields for listing/homepage — no description, sections, specGroups, specs
 const LIST_PROJECTION = "name brief category subCategory brand color storage originalPrice salePrice warrantyYears freeDelivery taxIncluded inStock installment variants image images";
+
+// Trim each variant to only what ProductCard needs:
+// - images[0] only (not the full gallery)
+// - color, colorCode, defaultStorage, storageOptions kept
+// Also trim product.images to [images[0]] since card only uses first image
+function slimVariants(products) {
+  for (const p of products) {
+    if (Array.isArray(p.variants)) {
+      for (const v of p.variants) {
+        if (Array.isArray(v.images) && v.images.length > 1) {
+          v.images = [v.images[0]];
+        }
+      }
+    }
+    // keep only first image in the root images array
+    if (Array.isArray(p.images) && p.images.length > 1) {
+      p.images = [p.images[0]];
+    }
+  }
+  return products;
+}
 
 exports.getProducts = async (req, res) => {
   try {
     const { q, brand } = req.query;
     const query = {};
     if (brand) query.brand = { $regex: new RegExp(`^${brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") };
-    if (!q) return res.json(await Product.find(query, LIST_PROJECTION).lean());
+    if (!q) return res.json(slimVariants(await Product.find(query, LIST_PROJECTION).lean()));
 
     const normalized = normalizeArabic(String(q).slice(0, 100));
     const products = await Product.find(query, LIST_PROJECTION).limit(200).lean();
     const filtered = products.filter((p) =>
       normalizeArabic(p.name).includes(normalized)
     );
-    res.json(filtered);
+    res.json(slimVariants(filtered));
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
@@ -85,8 +105,14 @@ exports.verifyCart = async (req, res) => {
 
 exports.getProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findById(req.params.id).lean();
     if (!product) return res.status(404).json({ message: "Product not found" });
+    // Add virtual fields manually since lean() skips them
+    product.price = product.salePrice || product.originalPrice;
+    product.discountPercent =
+      product.salePrice != null && product.salePrice !== product.originalPrice
+        ? Math.round(((product.originalPrice - product.salePrice) / product.originalPrice) * 100)
+        : 0;
     res.json(product);
   } catch {
     res.status(404).json({ message: "Product not found" });
