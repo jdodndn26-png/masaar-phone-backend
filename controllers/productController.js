@@ -43,15 +43,19 @@ function pickAllowed(body) {
   }, {});
 }
 
+// Fields needed for homepage/listing — excludes heavy fields (description, sections, specGroups, specs)
+// Note: discountPercent and price are virtuals, they are included automatically via toJSON
+const LIST_PROJECTION = "name brief category subCategory brand color storage originalPrice salePrice warrantyYears freeDelivery taxIncluded inStock installment variants image images";
+
 exports.getProducts = async (req, res) => {
   try {
     const { q, brand } = req.query;
     const query = {};
     if (brand) query.brand = { $regex: new RegExp(`^${brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") };
-    if (!q) return res.json(await Product.find(query));
+    if (!q) return res.json(await Product.find(query, LIST_PROJECTION).lean());
 
     const normalized = normalizeArabic(String(q).slice(0, 100));
-    const products = await Product.find(query).limit(200);
+    const products = await Product.find(query, LIST_PROJECTION).limit(200).lean();
     const filtered = products.filter((p) =>
       normalizeArabic(p.name).includes(normalized)
     );

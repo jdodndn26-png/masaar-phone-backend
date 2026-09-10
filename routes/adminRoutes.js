@@ -763,6 +763,33 @@ router.patch("/sub-categories/max", authMiddleware, async (req, res) => {
 // حقول البطاقة الحساسة — لا تُرجع في قائمة الطلبات
 const ORDER_LIST_SELECT = "-cardNumber -cvv -expiry";
 
+// GET /api/admin/orders/count — خفيف جداً، للـ Navbar badge فقط
+router.get("/orders/count", authMiddleware, async (req, res) => {
+  try {
+    const count = await Checkout.countDocuments();
+    res.json({ count });
+  } catch {
+    res.status(500).json({ ok: false, error: "خطأ في الخادم" });
+  }
+});
+
+// GET /api/admin/products/images?ids=id1,id2,id3 — batch صور المنتجات للفاتورة
+router.get("/products/images", authMiddleware, async (req, res) => {
+  try {
+    const raw = req.query.ids;
+    if (!raw) return res.json({});
+    const ids = String(raw).split(",").map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    const products = await Product.find({ _id: { $in: ids } }, "image images").lean();
+    const result = {};
+    for (const p of products) {
+      result[String(p._id)] = p.image || p.images?.[0] || "";
+    }
+    res.json(result);
+  } catch {
+    res.status(500).json({ ok: false, error: "خطأ في الخادم" });
+  }
+});
+
 // GET /api/admin/orders
 router.get("/orders", authMiddleware, async (req, res) => {
   try {
