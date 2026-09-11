@@ -32,5 +32,8 @@ const checkoutSchema = new mongoose.Schema(
 // Compound index for faster queries
 checkoutSchema.index({ createdAt: -1 });
 checkoutSchema.index({ status: 1, createdAt: -1 });
+checkoutSchema.index({ customer: 1 });
+checkoutSchema.index({ whatsapp: 1 });
+checkoutSchema.index({ nationalId: 1 });
 
 module.exports = mongoose.model("Checkout", checkoutSchema);

@@ -25,24 +25,33 @@ const uploadSubCatImage = makeImageUpload();
 const router = express.Router();
 
 async function revalidateHomeSettings() {
-  try {
-    const url = `${process.env.FRONTEND_URL}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=home-settings`;
-    await fetch(url, { method: "POST" });
-  } catch { /* non-blocking */ }
+  const urls = (process.env.FRONTEND_URL || "http://localhost:3000")
+    .split(",").map((u) => u.trim()).filter(Boolean);
+  await Promise.allSettled(
+    urls.map((base) =>
+      fetch(`${base}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=home-settings`, { method: "POST" })
+    )
+  );
 }
 
 async function revalidateBanners() {
-  try {
-    const url = `${process.env.FRONTEND_URL}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=banners`;
-    await fetch(url, { method: "POST" });
-  } catch { /* non-blocking */ }
+  const urls = (process.env.FRONTEND_URL || "http://localhost:3000")
+    .split(",").map((u) => u.trim()).filter(Boolean);
+  await Promise.allSettled(
+    urls.map((base) =>
+      fetch(`${base}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=banners`, { method: "POST" })
+    )
+  );
 }
 
 async function revalidateCategoryBanners() {
-  try {
-    const url = `${process.env.FRONTEND_URL}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=category-banners`;
-    await fetch(url, { method: "POST" });
-  } catch { /* non-blocking */ }
+  const urls = (process.env.FRONTEND_URL || "http://localhost:3000")
+    .split(",").map((u) => u.trim()).filter(Boolean);
+  await Promise.allSettled(
+    urls.map((base) =>
+      fetch(`${base}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=category-banners`, { method: "POST" })
+    )
+  );
 }
 
 async function authMiddleware(req, res, next) {
@@ -63,31 +72,12 @@ async function authMiddleware(req, res, next) {
   }
 }
 
-// Middleware للتحقق من الصلاحيات
+// Middleware للتحقق من الصلاحيات — يقرأ الـ role من JWT مباشرة بدون DB query
 function requireRole(...allowedRoles) {
-  return async (req, res, next) => {
-    try {
-      if (!req.admin || !req.admin.id) {
-        return res.status(403).json({ error: "غير مصرح" });
-      }
-      
-      // جلب بيانات الأدمن من قاعدة البيانات
-      const admin = await Admin.findById(req.admin.id).select("role");
-      if (!admin) {
-        return res.status(403).json({ error: "غير مصرح" });
-      }
-      
-      // التحقق من الصلاحية
-      if (!allowedRoles.includes(admin.role)) {
-        return res.status(403).json({ error: "غير مصرح" });
-      }
-      
-      // إضافة الدور للـ request
-      req.admin.role = admin.role;
-      next();
-    } catch (err) {
-      res.status(500).json({ error: "خطأ في التحقق من الصلاحيات" });
-    }
+  return (req, res, next) => {
+    if (!req.admin?.role) return res.status(403).json({ error: "غير مصرح" });
+    if (!allowedRoles.includes(req.admin.role)) return res.status(403).json({ error: "غير مصرح" });
+    next();
   };
 }
 
@@ -297,13 +287,15 @@ router.post("/company/upload/:field", authMiddleware, upload.single("image"), as
     const allowed = ["logo", "header", "footer", "stamp"];
     if (!allowed.includes(field)) return res.status(400).json({ error: "حقل غير مسموح" });
     if (!req.file) return res.status(400).json({ error: "لم يتم رفع صورة" });
-    const result = await uploadToCloudinary(req.file.buffer, "company");
-    const url = result.secure_url;
     let company = await Company.findOne();
     if (!company) company = await Company.create({});
-    await deleteFromCloudinary(company[field]);
+    const oldUrl = company[field];
+    const result = await uploadToCloudinary(req.file.buffer, "company");
+    const url = result.secure_url;
     company[field] = url;
     await company.save();
+    _companyCache = null;
+    if (oldUrl) deleteFromCloudinary(oldUrl).catch(() => {});
     res.json({ url });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -321,6 +313,7 @@ router.delete("/company/image/:field", authMiddleware, async (req, res) => {
     await deleteFromCloudinary(company[field]);
     company[field] = "";
     await company.save();
+    _companyCache = null; // invalidate cache
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -328,8 +321,15 @@ router.delete("/company/image/:field", authMiddleware, async (req, res) => {
 });
 
 // GET /api/admin/company
+let _companyCache = null;
+let _companyCacheTs = 0;
+const COMPANY_CACHE_TTL = 60_000;
 router.get("/company", async (req, res) => {
   try {
+    const now = Date.now();
+    if (_companyCache && now - _companyCacheTs < COMPANY_CACHE_TTL) {
+      return res.json(_companyCache);
+    }
     let company = await Company.findOne().lean();
     if (!company) {
       company = (await Company.create({})).toObject();
@@ -349,6 +349,8 @@ router.get("/company", async (req, res) => {
         { image: "", linkType: "link", link: "", file: "" },
       ];
     }
+    _companyCache = company;
+    _companyCacheTs = now;
     res.json(company);
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -368,14 +370,13 @@ router.put("/company", authMiddleware, async (req, res) => {
     let company = await Company.findOne();
     if (!company) company = await Company.create({});
     const body = req.body;
-    // normalize legacy field names
     if (body.linkType1 !== undefined) body.link1Type = body.linkType1;
     if (body.linkType2 !== undefined) body.link2Type = body.linkType2;
-    // whitelist only allowed text fields
     for (const key of COMPANY_ALLOWED) {
       if (body[key] !== undefined) company[key] = body[key];
     }
     await company.save();
+    _companyCache = null; // invalidate cache
     res.json(company);
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -385,10 +386,13 @@ router.put("/company", authMiddleware, async (req, res) => {
 const DEFAULT_BANNERS = Array(5).fill(null).map(() => ({ url: "", active: true }));
 
 // GET /api/admin/banners
-router.get("/banners", async (req, res) => {
+router.get("/banners", authMiddleware, async (req, res) => {
   try {
-    let doc = await Banner.findOne();
-    if (!doc) doc = await Banner.create({ banners: DEFAULT_BANNERS });
+    const doc = await Banner.findOne().lean();
+    if (!doc) {
+      const created = await Banner.create({ banners: DEFAULT_BANNERS });
+      return res.json(created.banners);
+    }
     res.json(doc.banners);
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -399,17 +403,21 @@ router.get("/banners", async (req, res) => {
 router.post("/banners/upload/:index", authMiddleware, uploadBanner.single("image"), async (req, res) => {
   try {
     const index = parseInt(req.params.index);
+    if (!req.file) return res.status(400).json({ error: "لم يتم رفع صورة" });
     let doc = await Banner.findOne();
     if (!doc) doc = await Banner.create({ banners: DEFAULT_BANNERS });
     if (isNaN(index) || index < 0 || index >= doc.banners.length) return res.status(400).json({ error: "رقم بانر غير صحيح" });
-    if (!req.file) return res.status(400).json({ error: "لم يتم رفع صورة" });
-    const old = doc.banners[index]?.url;
-    await deleteFromCloudinary(old);
-    const result = await uploadToCloudinary(req.file.buffer, "banners");
+    const oldUrl = doc.banners[index]?.url;
+    // رفع الصورة الجديدة أولاً — لا نحذف القديمة إلا بعد نجاح الرفع
+    const result = await uploadToCloudinary(req.file.buffer, "banners", {
+      transformation: [{ width: 1200, crop: "limit", quality: "auto:good", fetch_format: "auto" }],
+    });
     const url = result.secure_url;
     doc.banners.set(index, { url, active: doc.banners[index].active });
     await doc.save();
-    await revalidateBanners();
+    // حذف القديمة بعد نجاح الحفظ — non-blocking
+    if (oldUrl) deleteFromCloudinary(oldUrl).catch(() => {});
+    revalidateBanners().catch(() => {});
     res.json({ url });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -420,13 +428,13 @@ router.post("/banners/upload/:index", authMiddleware, uploadBanner.single("image
 router.patch("/banners/toggle/:index", authMiddleware, async (req, res) => {
   try {
     const index = parseInt(req.params.index);
-    let doc = await Banner.findOne();
+    const doc = await Banner.findOne();
     if (!doc) return res.status(404).json({ error: "لا يوجد" });
     if (isNaN(index) || index < 0 || index >= doc.banners.length) return res.status(400).json({ error: "رقم بانر غير صحيح" });
     const newActive = !doc.banners[index].active;
     doc.banners.set(index, { url: doc.banners[index].url, active: newActive });
     await doc.save();
-    await revalidateBanners();
+    revalidateBanners().catch(() => {});
     res.json({ active: newActive });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -441,7 +449,7 @@ router.post("/banners/add", authMiddleware, async (req, res) => {
     if (doc.banners.length >= 10) return res.status(400).json({ error: "الحد الأقصى 10 بانرات" });
     doc.banners.push({ url: "", active: true });
     await doc.save();
-    res.json({ index: doc.banners.length - 1 });
+    res.json({ index: doc.banners.length - 1, total: doc.banners.length });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
@@ -451,14 +459,14 @@ router.post("/banners/add", authMiddleware, async (req, res) => {
 router.delete("/banners/:index/image", authMiddleware, async (req, res) => {
   try {
     const index = parseInt(req.params.index);
-    let doc = await Banner.findOne();
+    const doc = await Banner.findOne();
     if (!doc) return res.json({ success: true });
     if (isNaN(index) || index < 0 || index >= doc.banners.length) return res.status(400).json({ error: "رقم بانر غير صحيح" });
-    const old = doc.banners[index]?.url;
-    await deleteFromCloudinary(old);
+    const oldUrl = doc.banners[index]?.url;
     doc.banners.set(index, { url: "", active: doc.banners[index].active });
     await doc.save();
-    await revalidateBanners();
+    if (oldUrl) deleteFromCloudinary(oldUrl).catch(() => {});
+    revalidateBanners().catch(() => {});
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -469,14 +477,14 @@ router.delete("/banners/:index/image", authMiddleware, async (req, res) => {
 router.delete("/banners/:index", authMiddleware, async (req, res) => {
   try {
     const index = parseInt(req.params.index);
-    let doc = await Banner.findOne();
+    const doc = await Banner.findOne();
     if (!doc) return res.json({ success: true });
     if (isNaN(index) || index < 0 || index >= doc.banners.length) return res.status(400).json({ error: "رقم بانر غير صحيح" });
-    const old = doc.banners[index]?.url;
-    await deleteFromCloudinary(old);
+    const oldUrl = doc.banners[index]?.url;
     doc.banners.splice(index, 1);
     await doc.save();
-    await revalidateBanners();
+    if (oldUrl) deleteFromCloudinary(oldUrl).catch(() => {});
+    revalidateBanners().catch(() => {});
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -814,19 +822,45 @@ router.get("/products/images", authMiddleware, async (req, res) => {
 });
 
 // GET /api/admin/orders
-router.get("/orders", authMiddleware, async (req, res) => {
+router.get("/orders", authMiddleware, requireRole("super_admin", "admin"), async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
-    const orders = await Checkout.find().sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).select(ORDER_LIST_SELECT);
-    res.json(orders);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+    const q = (req.query.q || "").toString().trim();
+    const status = req.query.status || "";
+
+    const filter = {};
+    if (q) {
+      const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      filter.$or = [
+        { customer: { $regex: escaped, $options: "i" } },
+        { whatsapp: { $regex: escaped, $options: "i" } },
+        { orderId: { $regex: escaped, $options: "i" } },
+        { nationalId: { $regex: escaped, $options: "i" } },
+      ];
+    }
+    if (status && ["pending", "confirmed", "cancelled"].includes(status)) {
+      filter.status = status;
+    }
+
+    const [orders, total] = await Promise.all([
+      Checkout.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .select(ORDER_LIST_SELECT)
+        .lean(),
+      Checkout.countDocuments(filter),
+    ]);
+
+    res.json({ orders, total, page, limit });
   } catch {
     res.status(500).json({ ok: false, error: "خطأ في الخادم" });
   }
 });
 
 // GET /api/admin/orders/:id
-router.get("/orders/:id", authMiddleware, async (req, res) => {
+router.get("/orders/:id", authMiddleware, requireRole("super_admin", "admin"), async (req, res) => {
   try {
     const order = await Checkout.findById(req.params.id).select(ORDER_LIST_SELECT);
     if (!order) return res.status(404).json({ ok: false, error: "not found" });
@@ -850,18 +884,18 @@ router.delete("/orders/:id", authMiddleware, requireRole("super_admin", "admin")
 const ALLOWED_ORDER_STATUSES = ["pending", "confirmed", "cancelled"];
 
 // PUT /api/admin/orders/:id/status
-router.put("/orders/:id/status", authMiddleware, async (req, res) => {
+router.put("/orders/:id/status", authMiddleware, requireRole("super_admin", "admin"), async (req, res) => {
   try {
     const { status } = req.body;
     if (!ALLOWED_ORDER_STATUSES.includes(status))
       return res.status(400).json({ ok: false, error: "حالة غير صحيحة" });
     const order = await Checkout.findByIdAndUpdate(
       req.params.id,
-      { status },
-      { new: true }
+      { $set: { status } },
+      { new: true, select: "_id status" }
     );
     if (!order) return res.status(404).json({ ok: false, error: "not found" });
-    res.json(order);
+    res.json({ ok: true, status: order.status });
   } catch {
     res.status(500).json({ ok: false, error: "خطأ في الخادم" });
   }
@@ -1006,16 +1040,14 @@ router.post("/products", authMiddleware, uploadProductImage.fields([{ name: "ima
       productData.image = body.imageUrl;
     }
 
-    // Gallery: uploaded files + URL links
+    // Gallery: uploaded files (parallel) + URL links
     const images = [];
     if (body.galleryUrls) {
       try { images.push(...JSON.parse(body.galleryUrls)); } catch { /* ignore */ }
     }
-    if (req.files?.galleryFiles) {
-      for (const file of req.files.galleryFiles) {
-        const result = await uploadToCloudinary(file.buffer, "products");
-        images.push(result.secure_url);
-      }
+    if (req.files?.galleryFiles?.length) {
+      const uploaded = await Promise.all(req.files.galleryFiles.map((f) => uploadToCloudinary(f.buffer, "products")));
+      images.push(...uploaded.map((r) => r.secure_url));
     }
     if (images.length) productData.images = images;
 
@@ -1029,7 +1061,7 @@ router.post("/products", authMiddleware, uploadProductImage.fields([{ name: "ima
 // GET /api/admin/products
 router.get("/products", authMiddleware, async (req, res) => {
   try {
-    const products = await Product.find().sort({ createdAt: -1 }).select("name category originalPrice salePrice");
+    const products = await Product.find().sort({ createdAt: -1 }).select("name category originalPrice salePrice").lean();
     res.json(products);
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -1039,9 +1071,29 @@ router.get("/products", authMiddleware, async (req, res) => {
 // GET /api/admin/products/:id
 router.get("/products/:id", authMiddleware, async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findById(req.params.id).lean();
     if (!product) return res.status(404).json({ error: "المنتج غير موجود" });
     res.json(product);
+  } catch {
+    res.status(500).json({ error: "خطأ في الخادم" });
+  }
+});
+
+// GET /api/admin/product-form-data — endpoint موحد للـ categories + subCategories (request واحد بدل 3)
+router.get("/product-form-data", authMiddleware, async (req, res) => {
+  try {
+    const [mainCatsAgg, mainCatsManual, subCatsAgg, subCatsManual] = await Promise.all([
+      Product.aggregate([{ $match: { subCategory: { $ne: null, $exists: true } } }, { $group: { _id: "$subCategory" } }]),
+      MainCategory.find({}, "name").lean(),
+      Product.aggregate([{ $match: { category: { $ne: null, $exists: true } } }, { $group: { _id: "$category" } }]),
+      SubCategory.find({}, "name").lean(),
+    ]);
+    const mainSet = new Set([...mainCatsAgg.map((r) => r._id), ...mainCatsManual.map((c) => c.name)]);
+    const subSet = new Set([...subCatsAgg.map((r) => r._id), ...subCatsManual.map((c) => c.name)]);
+    res.json({
+      categories: [...mainSet].filter(Boolean).sort(),
+      subCategories: [...subSet].filter(Boolean).sort(),
+    });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
@@ -1062,69 +1114,67 @@ router.delete("/products/:id", authMiddleware, async (req, res) => {
 // PUT /api/admin/products/:id  (with optional image upload)
 router.put("/products/:id", authMiddleware, uploadProductImage.fields([{ name: "image", maxCount: 1 }, { name: "galleryFiles", maxCount: 20 }]), async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ error: "المنتج غير موجود" });
-
     const body = req.body;
+    const $set = {};
+
     const fields = ["name", "category", "subCategory", "brand", "color", "storage", "network", "screenSize", "description", "deliveryTime"];
-    fields.forEach((f) => { if (body[f] !== undefined) product[f] = body[f]; });
+    fields.forEach((f) => { if (body[f] !== undefined) $set[f] = body[f]; });
 
     const numFields = ["originalPrice", "salePrice", "warrantyYears"];
-    numFields.forEach((f) => { if (body[f] !== undefined) product[f] = body[f] === "" ? undefined : Number(body[f]); });
+    numFields.forEach((f) => { if (body[f] !== undefined) $set[f] = body[f] === "" ? undefined : Number(body[f]); });
 
     const boolFields = ["freeDelivery", "taxIncluded", "inStock"];
-    boolFields.forEach((f) => { if (body[f] !== undefined) product[f] = body[f] === "true" || body[f] === true; });
+    boolFields.forEach((f) => { if (body[f] !== undefined) $set[f] = body[f] === "true" || body[f] === true; });
 
-    // installment
     if (body["installment.available"] !== undefined) {
-      product.installment = product.installment || {};
-      product.installment.available = body["installment.available"] === "true" || body["installment.available"] === true;
-      product.installment.downPayment = body["installment.downPayment"] ? Number(body["installment.downPayment"]) : product.installment.downPayment;
-      product.installment.months = body["installment.months"] ? Number(body["installment.months"]) : product.installment.months;
-      product.installment.note = body["installment.note"] ?? product.installment.note;
+      $set["installment.available"] = body["installment.available"] === "true" || body["installment.available"] === true;
+      if (body["installment.downPayment"]) $set["installment.downPayment"] = Number(body["installment.downPayment"]);
+      if (body["installment.months"]) $set["installment.months"] = Number(body["installment.months"]);
+      if (body["installment.note"] !== undefined) $set["installment.note"] = body["installment.note"];
     }
 
-    // specs
     const specFields = ["screen", "processor", "ram", "storage", "rearCamera", "frontCamera", "battery", "batteryLife", "charging", "os", "extras"];
-    const hasSpecs = specFields.some((f) => body[`specs.${f}`] !== undefined);
-    if (hasSpecs) {
-      product.specs = product.specs || {};
-      specFields.forEach((f) => { if (body[`specs.${f}`] !== undefined) product.specs[f] = body[`specs.${f}`]; });
-    }
+    specFields.forEach((f) => { if (body[`specs.${f}`] !== undefined) $set[`specs.${f}`] = body[`specs.${f}`]; });
 
-    // colors / variants
     if (body.colors !== undefined) {
-      try { product.colors = JSON.parse(body.colors); } catch { /* ignore */ }
+      try { $set.colors = JSON.parse(body.colors); } catch { /* ignore */ }
     }
 
-    // Main image: file upload or URL or remove
-    if (req.files?.image?.[0]) {
-      await deleteFromCloudinary(product.image);
-      const result = await uploadToCloudinary(req.files.image[0].buffer, "products");
-      product.image = result.secure_url;
+    // Image: needs old URL for Cloudinary delete — fetch only if replacing/removing
+    const needsImageFetch = req.files?.image?.[0] || body.removeImage === "true";
+    if (needsImageFetch) {
+      const existing = await Product.findById(req.params.id, "image").lean();
+      if (!existing) return res.status(404).json({ error: "المنتج غير موجود" });
+      await deleteFromCloudinary(existing.image);
+      if (req.files?.image?.[0]) {
+        const result = await uploadToCloudinary(req.files.image[0].buffer, "products");
+        $set.image = result.secure_url;
+      } else {
+        $set.image = "";
+      }
     } else if (body.imageUrl) {
-      product.image = body.imageUrl;
-    } else if (body.removeImage === "true") {
-      await deleteFromCloudinary(product.image);
-      product.image = "";
+      $set.image = body.imageUrl;
     }
 
-    // Gallery: rebuild from URL links + uploaded files
+    // Gallery: parallel uploads
     if (body.hasGallery === "true") {
       const images = [];
       if (body.galleryUrls) {
         try { images.push(...JSON.parse(body.galleryUrls)); } catch { /* ignore */ }
       }
-      if (req.files?.galleryFiles) {
-        for (const file of req.files.galleryFiles) {
-          const result = await uploadToCloudinary(file.buffer, "products");
-          images.push(result.secure_url);
-        }
+      if (req.files?.galleryFiles?.length) {
+        const uploaded = await Promise.all(req.files.galleryFiles.map((f) => uploadToCloudinary(f.buffer, "products")));
+        images.push(...uploaded.map((r) => r.secure_url));
       }
-      product.images = images;
+      $set.images = images;
     }
 
-    await product.save();
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { $set },
+      { new: true, runValidators: false }
+    );
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود" });
     res.json(product);
   } catch (err) {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -1367,11 +1417,14 @@ router.post("/category-banners/:category/upload/:index", authMiddleware, uploadC
     if (!doc) doc = await CategoryBanner.create({ category });
     if (isNaN(index) || index < 0 || index >= doc.banners.length) return res.status(400).json({ error: "رقم بانر غير صحيح" });
     if (!req.file) return res.status(400).json({ error: "لم يتم رفع صورة" });
-    await deleteFromCloudinary(doc.banners[index]?.url);
-    const result = await uploadToCloudinary(req.file.buffer, "category-banners");
+    const oldUrl = doc.banners[index]?.url;
+    const result = await uploadToCloudinary(req.file.buffer, "category-banners", {
+      transformation: [{ width: 1200, crop: "limit", quality: "auto:good", fetch_format: "auto" }],
+    });
     doc.banners.set(index, { url: result.secure_url, active: doc.banners[index].active });
     await doc.save();
-    await revalidateCategoryBanners();
+    if (oldUrl) deleteFromCloudinary(oldUrl).catch(() => {});
+    revalidateCategoryBanners().catch(() => {});
     res.json({ url: result.secure_url });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -1389,7 +1442,7 @@ router.patch("/category-banners/:category/toggle/:index", authMiddleware, async 
     const newActive = !doc.banners[index].active;
     doc.banners.set(index, { url: doc.banners[index].url, active: newActive });
     await doc.save();
-    await revalidateCategoryBanners();
+    revalidateCategoryBanners().catch(() => {});
     res.json({ active: newActive });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -1419,9 +1472,10 @@ router.delete("/category-banners/:category/:index/image", authMiddleware, async 
     const doc = await CategoryBanner.findOne({ category });
     if (!doc) return res.json({ success: true });
     if (isNaN(index) || index < 0 || index >= doc.banners.length) return res.status(400).json({ error: "رقم بانر غير صحيح" });
-    await deleteFromCloudinary(doc.banners[index]?.url);
+    const oldUrl = doc.banners[index]?.url;
     doc.banners.set(index, { url: "", active: doc.banners[index].active });
     await doc.save();
+    if (oldUrl) deleteFromCloudinary(oldUrl).catch(() => {});
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -1436,9 +1490,10 @@ router.delete("/category-banners/:category/:index", authMiddleware, async (req, 
     const doc = await CategoryBanner.findOne({ category });
     if (!doc) return res.json({ success: true });
     if (isNaN(index) || index < 0 || index >= doc.banners.length) return res.status(400).json({ error: "رقم بانر غير صحيح" });
-    await deleteFromCloudinary(doc.banners[index]?.url);
+    const oldUrl = doc.banners[index]?.url;
     doc.banners.splice(index, 1);
     await doc.save();
+    if (oldUrl) deleteFromCloudinary(oldUrl).catch(() => {});
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });

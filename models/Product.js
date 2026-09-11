@@ -72,14 +72,12 @@ const productSchema = new mongoose.Schema(
       os: String,
       extras: String,
     },
-    // specGroups: structured specs for Comparison (alongside legacy specs)
     specGroups: [
       {
         group: { type: String, required: true },
         items: [{ key: String, value: String }],
       },
     ],
-    // Dynamic page sections
     sections: [sectionSub],
     freeDelivery: { type: Boolean, default: true },
     deliveryTime: { type: String, default: "24 ساعة" },
@@ -93,10 +91,10 @@ const productSchema = new mongoose.Schema(
       policy: String,
     },
     taxIncluded: { type: Boolean, default: true },
-    category: { type: String, index: true },
-    subCategory: { type: String, index: true },
-    brand: { type: String, index: true },
-    inStock: { type: Boolean, default: true, index: true },
+    category: { type: String },
+    subCategory: { type: String },
+    brand: { type: String },
+    inStock: { type: Boolean, default: true },
   },
   {
     timestamps: true,
@@ -105,8 +103,12 @@ const productSchema = new mongoose.Schema(
   }
 );
 
+// Compound indexes — يغطي الـ single-field queries أيضاً
+productSchema.index({ createdAt: -1 });
 productSchema.index({ category: 1, inStock: 1 });
 productSchema.index({ brand: 1, inStock: 1 });
+productSchema.index({ category: 1, brand: 1 });
+productSchema.index({ subCategory: 1 });
 
 productSchema.virtual("discountPercent").get(function () {
   if (this.salePrice != null && this.salePrice !== this.originalPrice) {
@@ -118,11 +120,5 @@ productSchema.virtual("discountPercent").get(function () {
 productSchema.virtual("price").get(function () {
   return this.salePrice || this.originalPrice;
 });
-
-// Indexes for common query patterns
-productSchema.index({ category: 1 });
-productSchema.index({ brand: 1 });
-productSchema.index({ inStock: 1 });
-productSchema.index({ category: 1, brand: 1 });
 
 module.exports = mongoose.model("Product", productSchema);

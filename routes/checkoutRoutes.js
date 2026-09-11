@@ -20,6 +20,14 @@ async function authMiddleware(req, res, next) {
   }
 }
 
+function requireRole(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.admin?.role) return res.status(403).json({ error: "غير مصرح" });
+    if (!allowedRoles.includes(req.admin.role)) return res.status(403).json({ error: "غير مصرح" });
+    next();
+  };
+}
+
 // Helper: Sanitize string inputs
 function sanitize(str) {
   if (!str || typeof str !== "string") return "";
@@ -184,42 +192,65 @@ router.get("/:id", authMiddleware, async (req, res) => {
 
 // PUT /api/checkout/:id/status — admin only
 const ALLOWED_STATUSES = ["pending", "confirmed", "cancelled"];
-router.put("/:id/status", authMiddleware, async (req, res) => {
+router.put("/:id/status", authMiddleware, requireRole("super_admin", "admin"), async (req, res) => {
   try {
     const { status } = req.body;
     if (!ALLOWED_STATUSES.includes(status))
       return res.status(400).json({ ok: false, error: "حالة غير صحيحة" });
     const order = await Checkout.findByIdAndUpdate(
       req.params.id,
-      { status },
-      { new: true }
+      { $set: { status } },
+      { new: true, select: "_id status" }
     );
     if (!order) return res.status(404).json({ ok: false, error: "not found" });
-    res.json(order);
+    res.json({ ok: true, status: order.status });
   } catch {
     res.status(500).json({ ok: false, error: "خطأ في الخادم" });
   }
 });
 
 // PUT /api/checkout/:id/financials — admin only
-router.put("/:id/financials", authMiddleware, async (req, res) => {
+router.put("/:id/financials", authMiddleware, requireRole("super_admin", "admin"), async (req, res) => {
   try {
     const { total, downPayment, months, monthlyPayment } = req.body;
     const update = {};
-    if (total !== undefined) update.total = Number(total);
-    if (downPayment !== undefined) update.downPayment = Number(downPayment);
-    if (months !== undefined) update.months = Number(months);
-    if (monthlyPayment !== undefined) update.monthlyPayment = Number(monthlyPayment);
-    const order = await Checkout.findByIdAndUpdate(req.params.id, update, { new: true });
+    if (total !== undefined) {
+      const t = Number(total);
+      if (isNaN(t) || t < 0) return res.status(400).json({ ok: false, error: "الإجمالي غير صحيح" });
+      update.total = t;
+    }
+    if (downPayment !== undefined) {
+      const dp = Number(downPayment);
+      if (isNaN(dp) || dp < 0) return res.status(400).json({ ok: false, error: "الدفعة غير صحيحة" });
+      update.downPayment = dp;
+    }
+    if (months !== undefined) {
+      const m = Math.floor(Number(months));
+      if (isNaN(m) || m < 0 || m > 60) return res.status(400).json({ ok: false, error: "عدد الأشهر غير صحيح" });
+      update.months = m;
+    }
+    if (monthlyPayment !== undefined) {
+      const mp = Number(monthlyPayment);
+      if (isNaN(mp) || mp < 0) return res.status(400).json({ ok: false, error: "القسط غير صحيح" });
+      update.monthlyPayment = mp;
+    }
+    if (update.total !== undefined && update.downPayment !== undefined && update.downPayment > update.total) {
+      return res.status(400).json({ ok: false, error: "الدفعة الأولى أكبر من الإجمالي" });
+    }
+    const order = await Checkout.findByIdAndUpdate(
+      req.params.id,
+      { $set: update },
+      { new: true, select: "_id total downPayment months monthlyPayment" }
+    );
     if (!order) return res.status(404).json({ ok: false, error: "not found" });
-    res.json(order);
+    res.json({ ok: true, ...order.toObject() });
   } catch {
     res.status(500).json({ ok: false, error: "خطأ في الخادم" });
   }
 });
 
 // DELETE /api/checkout/:id — admin only
-router.delete("/:id", authMiddleware, async (req, res) => {
+router.delete("/:id", authMiddleware, requireRole("super_admin", "admin"), async (req, res) => {
   try {
     const order = await Checkout.findByIdAndDelete(req.params.id);
     if (!order) return res.status(404).json({ ok: false, error: "not found" });

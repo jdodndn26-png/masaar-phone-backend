@@ -19,6 +19,14 @@ async function ensureIndexes() {
     // reviews: approved + createdAt للـ homepage reviews query
     await db.collection("reviews").createIndex({ approved: 1, createdAt: -1 });
 
+    // checkouts: indexes للـ server-side search + pagination
+    await db.collection("checkouts").createIndex({ createdAt: -1 });
+    await db.collection("checkouts").createIndex({ status: 1, createdAt: -1 });
+    await db.collection("checkouts").createIndex({ customer: 1 });
+    await db.collection("checkouts").createIndex({ whatsapp: 1 });
+    await db.collection("checkouts").createIndex({ nationalId: 1 });
+    await db.collection("checkouts").createIndex({ orderId: 1 }, { unique: true });
+
     console.log("MongoDB indexes ensured");
   } catch (err) {
     // non-blocking — indexes are optional optimizations
