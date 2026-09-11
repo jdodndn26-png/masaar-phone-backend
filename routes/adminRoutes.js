@@ -386,7 +386,7 @@ router.put("/company", authMiddleware, async (req, res) => {
 const DEFAULT_BANNERS = Array(5).fill(null).map(() => ({ url: "", active: true }));
 
 // GET /api/admin/banners
-router.get("/banners", authMiddleware, async (req, res) => {
+router.get("/banners", async (req, res) => {
   try {
     const doc = await Banner.findOne().lean();
     if (!doc) {
