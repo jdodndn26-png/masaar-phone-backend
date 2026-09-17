@@ -95,6 +95,12 @@ const productSchema = new mongoose.Schema(
     subCategory: { type: String },
     brand: { type: String },
     inStock: { type: Boolean, default: true },
+    status: {
+      type: String,
+      enum: ["PRE_LAUNCH", "AVAILABLE", "OUT_OF_STOCK"],
+      default: "AVAILABLE",
+    },
+    purchasable: { type: Boolean, default: true },
   },
   {
     timestamps: true,

@@ -44,7 +44,7 @@ function pickAllowed(body) {
 }
 
 // Fields for listing/homepage — no description, sections, specGroups, specs
-const LIST_PROJECTION = "name brief category subCategory brand color storage originalPrice salePrice warrantyYears freeDelivery taxIncluded inStock installment variants image images";
+const LIST_PROJECTION = "name brief category subCategory brand color storage originalPrice salePrice warrantyYears freeDelivery taxIncluded inStock status purchasable installment variants image images";
 
 // Trim each variant to only what ProductCard needs:
 // - images[0] only (not the full gallery)
@@ -95,13 +95,33 @@ exports.verifyCart = async (req, res) => {
     }
     const products = await Product.find(
       { _id: { $in: ids } },
-      "name originalPrice salePrice inStock"
+      "name originalPrice salePrice inStock status purchasable"
     ).lean();
     res.json(products);
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
 };
+
+exports.updatePurchaseStatus = [requireAdmin, async (req, res) => {
+  try {
+    const { purchasable } = req.body;
+    if (typeof purchasable !== "boolean") {
+      return res.status(400).json({ error: "purchasable يجب أن يكون boolean" });
+    }
+    const status = purchasable ? "AVAILABLE" : "PRE_LAUNCH";
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { $set: { purchasable, status } },
+      { new: true, select: "name status purchasable" }
+    );
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود" });
+    revalidateProducts();
+    res.json({ ok: true, status: product.status, purchasable: product.purchasable });
+  } catch {
+    res.status(500).json({ error: "خطأ في الخادم" });
+  }
+}];
 
 exports.getProduct = async (req, res) => {
   try {

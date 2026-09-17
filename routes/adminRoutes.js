@@ -1061,8 +1061,36 @@ router.post("/products", authMiddleware, uploadProductImage.fields([{ name: "ima
 // GET /api/admin/products
 router.get("/products", authMiddleware, async (req, res) => {
   try {
-    const products = await Product.find().sort({ createdAt: -1 }).select("name category originalPrice salePrice").lean();
+    const products = await Product.find().sort({ createdAt: -1 }).select("name category originalPrice salePrice status purchasable").lean();
     res.json(products);
+  } catch {
+    res.status(500).json({ error: "خطأ في الخادم" });
+  }
+});
+
+// PATCH /api/admin/products/:id/purchase-status
+router.patch("/products/:id/purchase-status", authMiddleware, requireRole("super_admin", "admin"), async (req, res) => {
+  try {
+    const { purchasable } = req.body;
+    if (typeof purchasable !== "boolean") {
+      return res.status(400).json({ error: "purchasable يجب أن يكون boolean" });
+    }
+    const status = purchasable ? "AVAILABLE" : "PRE_LAUNCH";
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { $set: { purchasable, status } },
+      { new: true, select: "name status purchasable" }
+    );
+    if (!product) return res.status(404).json({ error: "المنتج غير موجود" });
+    // Invalidate product cache
+    const urls = (process.env.FRONTEND_URL || "http://localhost:3000")
+      .split(",").map((u) => u.trim()).filter(Boolean);
+    await Promise.allSettled(
+      urls.map((base) =>
+        fetch(`${base}/api/revalidate?secret=${process.env.REVALIDATE_SECRET}&tag=products`, { method: "POST" })
+      )
+    );
+    res.json({ ok: true, status: product.status, purchasable: product.purchasable });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
